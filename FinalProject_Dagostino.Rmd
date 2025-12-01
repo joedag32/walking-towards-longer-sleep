@@ -1,0 +1,347 @@
+---
+title: "Final Project"
+author: "Joe D'Agostino"
+date: "2025-11-21"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+## Final Project: Walking Towards Better Sleep
+
+Let's use my Apple Health data to see if on days when I take a higher number of steps, will I experience a greater amount of sleep that night, because increased physical activity promotes better sleep quality.
+
+## Initial Exploration
+
+```{r}
+# load libraries and dataset
+library(tidyverse) # Always load this guy and it's helper functions
+library(lubridate) # Going to need help with dealing with dates and time
+library(ggplot2) # Used for our graphs/visualizations
+
+```
+
+```{r}
+# Import data. I broke my Apple Health data download into smaller .csv files to make it easier to work with. The source XML was nearly 1.5 GB
+steps <- read_csv("data/step_count_data.csv")
+sleep <- read_csv("data/sleep_data.csv")
+```
+
+### Initial exploration into the step data
+
+```{r}
+# Let's try a glimpse to see what we're dealing with
+glimpse(steps)
+```
+
+```{r}
+# Let's try a summary to see what we're dealing with
+summary(steps)
+```
+
+```{r}
+# Let's check out the structure of the data
+str(steps)
+```
+
+Luckily it looks like the date columns won't need a whole lot of cleanup, which is always a big relief!
+
+```{r}
+# Let's see how many NA values are in each column of steps
+colSums(is.na(steps))
+```
+
+Thank you Apple! The data looked pretty clean in the previous tests, but its a lot of raws so doing the above check is a must. Lucky I won't have to deal with NAs with my step data.
+
+```{r}
+# Let's see if we can check to see what unique values are in the type column, I'm not too certain about the on just yet.
+unique(steps$type)
+# ok, just 1 value in there, and it's the value I was planning to use. That's one less thing I'll have to worry about in getting data cleaned up!
+```
+
+```{r}
+# Let's see if we can add up the steps and assign them for a given day
+steps_daily_total <- steps %>%
+  mutate(day = as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z")) %>% # convert the startDat to just the day yyyy-mm-dd
+  group_by(day) %>% # Group by the new day column
+  summarize(total = sum(value)) # Combine the similar rows with the total of steps
+```
+
+This is great to have the total steps by day, but the totals seem a bit too high to me. After closer inspection I noticed that there are times where my Apple Watch and iPhone are registered steps at the same time. I think the most logical case would be to just keep the step data from my Apple Watch, as my iPhone won't factor in with the collecting of sleep data I'm looking to gather.
+
+```{r}
+# Let's see if we can add up the steps and assign them for a given day only for the Apple Watch collected data
+steps_watch_daily_total <- steps %>%
+  mutate(day = as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z")) %>%
+  filter(str_detect(device, "Watch")) %>% # Filter only if device cotains "Watch" 
+  group_by(day) %>%
+  summarize(total_steps = sum(value))
+```
+
+This is more like it! A spot check with the Apple Health app on my iPhone does show that the results are matching up to how that registers my steps as well. I should be able to work with that.
+
+### Exploration into the sleep data
+
+```{r}
+# Let's try a glimpse to see what we're dealing with
+glimpse(sleep)
+```
+
+```{r}
+# Let's try a summary to see what we're dealing with
+summary(sleep)
+```
+
+```{r}
+# Let's check out the structure of the data
+str(sleep)
+```
+
+```{r}
+# Let's see how many NA values are in each column of sleep
+colSums(is.na(sleep))
+```
+
+NAs are only found in the unit and device column, but they're columns that I'm not planning to use. So again, very lucky to get dealing with data without NA values. I can focus on other tasks.
+
+Running a glimpse, summary and structure on the sleep data. I'm glad to see that the date values are in good shape and similar to the steps data. The type and value columns are going to what I'm going to have to figure out the most. I want to see how it's recording sleep. Apple did provided definitions to the different recorded stages of sleep:
+https://developer.apple.com/documentation/healthkit/hkcategoryvaluesleepanalysis
+
+I'm going to be interested in the following: asleepCore, asleepDeep, asleepRED, and asleepUnspecified. Or in this case there's only 1 value that I won't be interested in: awake. So I can make sure there are no awake values in there.
+
+I found a common definition of how most apps handle a sleep night:
+
+Night N = All sleep samples where the majority of the sample occurs between local time 6 PM on day N → 12 PM (noon) on day N+1.
+
+```{r}
+# I'm going to try to grab sleep data over a 2 day span since my sleep almost always, if not always spans 2 days overnight. This might take a few tries to get right! 
+sleep_daily_total <- sleep %>%
+  mutate(minutes_asleep = as.numeric(difftime(endDate, startDate, units = "mins"))) %>%
+  filter(!str_detect(value, "Awake")) %>% # Filter only if value does not contain "Awake"
+  mutate(day = case_when(
+    hour(startDate) >= 18 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"),
+    hour(endDate) <= 12 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z") + days(1),
+    TRUE ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"))
+  ) %>% # Create a new column day and assign it the value of the startDate day in the start time is after 6 pm, or assign the value of the next day if it's after 12 pm, otherwise you can assign it the startDate day
+  group_by(day)
+```
+
+This is great, took many tries to get the case_when correct. I do have to filter out the value with InBed to get an accurate reading though. So I'm going to tack that one below and tidy it a little bit more.
+
+```{r}
+# I'm going to try to grab sleep data over a 2 day span since my sleep almost always, if not always spans 2 days overnight. This might take a few tries to get right! 
+sleep_daily_total <- sleep %>%
+  mutate(minutes_asleep = as.numeric(difftime(endDate, startDate, units = "mins"))) %>%
+  filter(!str_detect(value, "Awake")) %>% # Filter only if value does not contain "Awake"
+  filter(!str_detect(value, "InBed")) %>% # Filter only if value does not contain "InBed"
+  filter(str_detect(sourceName, "Watch")) %>% # Filter only Apple Watch data
+  mutate(day = case_when(
+    hour(startDate) >= 18 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"),
+    hour(endDate) <= 12 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z") + days(1),
+    TRUE ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"))
+  ) %>%
+  group_by(day) %>%
+  summarize(total_minutes = sum(minutes_asleep))
+```
+
+Wow, I have the sleep added up in minutes even though it spans 2 days (overnight). Very proud I figured this one out!
+
+Next I'm going to merge the steps_watch_daily_total and sleep_daily_total datasets where the day columns are equal. I noticed that they are different length, and after some digging realized I wasn't tracking my sleep on my Apple Watch until 2021-10-12. So I'll just merge from that date forward.
+
+```{r}
+# Let's use a left join to merge these 2 together when the day columns are equal in value
+steps_sleep_merged <- left_join(sleep_daily_total, steps_watch_daily_total, by = "day")
+```
+
+```{r}
+# Let's try a correlation test between the total number of steps in a day vs the minutes of sleep in a night
+cor.test(steps_sleep_merged$total_steps, steps_sleep_merged$total_minutes)
+```
+
+There is not a significant correlation between the amount of steps taken in a day with the minutes of sleep I get in a given night (p = 0.6938).
+
+I also have access to workout data. So I'm going to see if days I workout more do I sleep better, as maybe workout data might have a correlation where steps did not.
+
+### Plan B, Exploration of Workout Data
+
+```{r}
+# Import workout data
+workout <- read_csv("data/workout_data.csv")
+```
+
+```{r}
+# Let's try a glimpse to see what we're dealing with
+glimpse(workout)
+```
+
+```{r}
+# Let's try a summary to see what we're dealing with
+summary(workout)
+```
+
+```{r}
+# Let's check out the structure of the data
+str(workout)
+```
+
+```{r}
+# Let's see how many NA values are in each column of workout
+colSums(is.na(workout))
+```
+
+ok, the workout data seems to follow similar patterns as the steps and sleep with NAs only in columns I don't need, which makes sense as it's collected by Apple Health like the previous 2 data sources. I'm going to see what types of of WorkoutActivityTypes we're dealing with but a quick glance looks like they're certainly more intensive than just steps.
+
+```{r}
+# Let's see the unique WorkoutActivityType
+unique(workout$workoutActivityType)
+```
+
+ok, these are all certainly more active that just tracking steps. I think this type of activity is worth exploring more to see if there is a correclation with sleep duration on a given night!
+
+```{r}
+# Let's see all the unique values in durationUnit, want to make sure theye're all min
+unique(workout$durationUnit)
+```
+
+Yep, all minutes so we're good there.
+
+```{r}
+# Let's add up the total workout minutes and assign them for a given day
+workout_daily_total <- workout %>%
+  mutate(day = as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z")) %>% # convert the startDate to just the day yyyy-mm-dd
+  group_by(day) %>% # Group by the new day column
+  summarize(total_workouts = sum(duration)) # Combine the similar rows with the total of steps
+```
+
+I think we're good! A spot check with the Apple Health app on my iPhone does show that the results are matching up to how that registers my workouts as well. Let's give this a shot with my sleep.
+
+```{r}
+# Let's use a left join to merge these 2 together when the day columns are equal in value
+workout_sleep_merged <- left_join(sleep_daily_total, workout_daily_total, by = "day")
+```
+
+```{r}
+# Let's try a correlation test between the total number of workout minutes in a day vs the minutes of sleep in a night
+cor.test(workout_sleep_merged$total_workouts, steps_sleep_merged$total_minutes)
+```
+
+There is still not a significant correlation between the amount of workout minutes taken in a day with the minutes of sleep I get in a given night (p = 0.6908). In fact it's nearly identical to the steps comparision.
+
+I'm going to look into one more thing. Let's see if I do not include walking workout data and just keep the more intensive workouts (running, cycling, lifting, etc.) and see if there's any correlation with sleep there.
+
+```{r}
+# Let's add up the total workout minutes except walking and assign them for a given day
+workout_no_walking_daily_total <- workout %>%
+  mutate(day = as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z")) %>% # convert the startDate to just the day yyyy-mm-dd
+  filter(!str_detect(workoutActivityType, "HKWorkoutActivityTypeWalking")) %>% # Filter only if value does not contain "HKWorkoutActivityTypeWalking"
+  group_by(day) %>% # Group by the new day column
+  summarize(total_workouts = sum(duration)) # Combine the similar rows with the total of steps
+```
+
+```{r}
+# Let's use a left join to merge workouts that aren't walking and sleep together when the day columns are equal in value
+workout_no_walk_sleep_merged <- left_join(sleep_daily_total, workout_no_walking_daily_total, by = "day")
+```
+
+```{r}
+# Let's try a correlation test between the total number of workout minutes in a day vs the minutes of sleep in a night
+cor.test(workout_no_walk_sleep_merged$total_workouts, workout_no_walk_sleep_merged$total_minutes)
+```
+
+There is still not a significant correlation between the amount of workout minutes excluding walking taken in a day with the minutes of sleep I get in a given night (p = 0.5432)!
+
+ok, I gave it a valid shot looking for a correlation and think it's time to admit it's just not there in this case. I suspect I'm too consistent of an individual with my habits over time in this particular case!!
+
+### Visualizations
+
+```{r}
+# Let's see the daily total steps taken and see how that looks visually.
+ggplot(steps_daily_total, aes(x = day, y = total)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Total Steps per Day on Combined Devices",
+    x = "Day",
+    y = "Total Steps"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold") # Make the title bold and centered
+  )
+```
+
+Figure 1: This bar chart depicts the total amount of steps taken per day by combined devices from 2016 through 2025. Notice a substantial increase in daily steps in May of 2021, that's when I got an Apple Watch to pair with my iPhone. Apple Health data by default tracks both devices' step counts.
+
+```{r}
+# Let's see the daily total steps taken just collected on my Apple Watch and see if that looks more accurate to me.
+ggplot(steps_watch_daily_total, aes(x = day, y = total_steps)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "Total Steps per Day with Apple Watch Only",
+    x = "Day",
+    y = "Total Steps"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold") # Make the title bold and centered
+  )
+```
+
+Figure 2: This bar chart depicts the total amount of steps taken per day with just my Apple Watch from 2021 through 2025.
+
+
+```{r}
+# Let's use a scatterplot with a regression line to see any correlation between steps taken and minutes slept in a day
+ggplot(steps_sleep_merged, aes(x = total_minutes, y = total_steps)) +
+  geom_point(alpha = 0.7, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    title = "Relationship Between Sleep Minutes and Steps",
+    x = "Minutes Slept",
+    y = "Steps Taken"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold") # Make the title bold and centered
+  )
+```
+
+Figure 3: This scatterplot with regression line depicts the relationship between sleep minutes and steps taken in a given day. The nearly flat regression line shows no significant correlation between the 2.
+
+```{r}
+# Let's use a scatterplot with a regression line to see any correlation between workout minutes and minutes slept in a day
+ggplot(workout_sleep_merged, aes(x = total_minutes, y = total_workouts)) +
+  geom_point(alpha = 0.7, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    title = "Relationship Between Sleep Minutes and Workout Minutes",
+    x = "Minutes Slept",
+    y = "Minutes Working Out"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold") # Make the title bold and centered
+  )
+```
+
+Figure 4: This scatterplot with regression line depicts the relationship between sleep minutes and workout minutes in a given day. The nearly flat regression line shows no significant correlation between the 2.
+
+```{r}
+# Let's use a scatterplot with a regression line to see any correlation between workout minutes minus walking and minutes slept in a day
+ggplot(workout_no_walk_sleep_merged, aes(x = total_minutes, y = total_workouts)) +
+  geom_point(alpha = 0.7, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    title = "Relationship Between Sleep and Workout Minutes Excluding Walking",
+    x = "Minutes Slept",
+    y = "Minutes Working Out"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold") # Make the title bold and centered
+  )
+```
+
+Figure 5: This scatterplot with regression line depicts the relationship between sleep minutes and workout minutes excluding walking in a given day. The nearly flat regression line shows no significant correlation between the 2, however there is a minimally slight increase in correlation comapred to Figure 4 when walking data was excluded.
+

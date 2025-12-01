@@ -1,0 +1,160 @@
+---
+title: "Final Project"
+author: "Joe D'Agostino"
+date: "2025-11-21"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+## Final Project: Stepping up to Better Sleep
+
+Let's example my Apple Health data to see if on days when I take a higher number of steps, will I experience a greater amount of sleep that night, because increased physical activity promotes better sleep quality.
+
+## Initial Exploration
+
+```{r}
+# load libraries and dataset
+library(tidyverse) # Always load this guy and it's helper functions
+library(lubridate) # Going to need help with dealing with dates and time
+library(ggplot2) # Used for our graphs/visualizations
+
+```
+
+```{r}
+# Import data. I broke my Apple Health data download into smaller .csv files to make it easier to work with. The source XML was nearly 1.5 GB
+steps <- read_csv("data/step_count_data.csv")
+sleep <- read_csv("data/sleep_data.csv")
+```
+
+### Initial exploration into the step data
+
+```{r}
+# Let's try a glimpse to see what we're dealing with
+glimpse(steps)
+```
+
+```{r}
+# Let's try a summary to see what we're dealing with
+summary(steps)
+```
+
+```{r}
+# Let's check out the structure of the data
+str(steps)
+```
+
+Luckily it looks like the date columns won't need a whole lot of cleanup, which is always a big relief!
+
+```{r}
+# Let's see how many NA values are in each column of steps
+colSums(is.na(steps))
+```
+
+Thank you Apple! The data looked pretty clean in the previous tests, but its a lot of raws so doing the above check is a must. Lucky I won't have to deal with NAs with my step data.
+
+```{r}
+# Let's see if we can check to see what unique values are in the type column, I'm not too certain about the on just yet.
+unique(steps$type)
+# ok, just 1 value in there, and it's the value I was planning to use. That's one less thing I'll have to worry about in getting data cleaned up!
+```
+
+```{r}
+# Let's see if we can add up the steps and assign them for a given day
+steps_daily_total <- steps %>%
+  mutate(day = as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z")) %>% # convert the startDat to just the day yyyy-mm-dd
+  group_by(day) %>% # Group by the new day column
+  summarize(total = sum(value)) # Combine the similar rows with the total of steps
+```
+
+This is great to have the total steps by day, but the totals seem a bit too high to me. After closer inspection I noticed that there are times where my Apple Watch and iPhone are registered steps at the same time. I think the most logical case would be to just keep the step data from my Apple Watch, as my iPhone won't factor in with the collecting of sleep data I'm looking to gather.
+
+```{r}
+# Let's see if we can add up the steps and assign them for a given day only for the Apple Watch collected data
+steps_watch_daily_total <- steps %>%
+  mutate(day = as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z")) %>%
+  filter(str_detect(device, "Watch")) %>% # Filter only if device cotains "Watch" 
+  group_by(day) %>%
+  summarize(total_steps = sum(value))
+```
+
+This is more like it! A spot check with the Apple Health app on my iPhone does show that the results are matching up to how that registers my steps as well. I should be able to work with that.
+
+### Exploration into the sleep data
+
+```{r}
+# Let's try a glimpse to see what we're dealing with
+glimpse(sleep)
+```
+
+```{r}
+# Let's try a summary to see what we're dealing with
+summary(sleep)
+```
+
+```{r}
+# Let's check out the structure of the data
+str(sleep)
+```
+
+```{r}
+# Let's see how many NA values are in each column of sleep
+colSums(is.na(sleep))
+```
+
+NAs are only found in the unit and device column, but they're columns that I'm not planning to use. So again, very lucky to get dealing with data without NA values. I can focus on other tasks.
+
+Running a glimpse, summary and structure on the sleep data. I'm glad to see that the date values are in good shape and similar to the steps data. The type and value columns are going to what I'm going to have to figure out the most. I want to see how it's recording sleep. Apple did provided definitions to the different recorded stages of sleep:
+https://developer.apple.com/documentation/healthkit/hkcategoryvaluesleepanalysis
+
+I'm going to be interested in the following: asleepCore, asleepDeep, asleepRED, and asleepUnspecified. Or in this case there's only 1 value that I won't be interested in: awake. So I can make sure there are no awake values in there.
+
+I found a common definition of how most apps handle a sleep night:
+
+Night N = All sleep samples where the majority of the sample occurs between local time 6 PM on day N → 12 PM (noon) on day N+1.
+
+```{r}
+# I'm going to try to grab sleep data over a 2 day span since my sleep almost always, if not always spans 2 days overnight. This might take a few tries to get right! 
+sleep_daily_total <- sleep %>%
+  mutate(minutes_asleep = as.numeric(difftime(endDate, startDate, units = "mins"))) %>%
+  filter(!str_detect(value, "Awake")) %>% # Filter only if value does not contain "Awake"
+  mutate(day = case_when(
+    hour(startDate) >= 18 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"),
+    hour(endDate) <= 12 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z") + days(1),
+    TRUE ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"))
+  ) %>% # Create a new column day and assign it the value of the startDate day in the start time is after 6 pm, or assign the value of the next day if it's after 12 pm, otherwise you can assign it the startDate day
+  group_by(day)
+```
+
+This is great, took many tries to get eh case_when correct. I do have to filter out the value with InBed to get an accurate reading though. So I'm going to tack that one below and tidy it a little bit more.
+
+```{r}
+# I'm going to try to grab sleep data over a 2 day span since my sleep almost always, if not always spans 2 days overnight. This might take a few tries to get right! 
+sleep_daily_total <- sleep %>%
+  mutate(minutes_asleep = as.numeric(difftime(endDate, startDate, units = "mins"))) %>%
+  filter(!str_detect(value, "Awake")) %>% # Filter only if value does not contain "Awake"
+  filter(!str_detect(value, "InBed")) %>% # Filter only if value does not contain "InBed"
+  filter(str_detect(sourceName, "Watch")) %>% # Filter only Apple Watch data
+  mutate(day = case_when(
+    hour(startDate) >= 18 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"),
+    hour(endDate) <= 12 ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z") + days(1),
+    TRUE ~ as.Date(startDate, format = "%Y-%m-%d %H:%M:%S %z"))
+  ) %>%
+  group_by(day) %>%
+  summarize(total_minutes = sum(minutes_asleep))
+```
+
+Wow, I have the sleep added up in minutes even though it spans 2 days (overnight). Very proud I figured this one out!
+
+Next I'm going to merge the steps_watch_daily_total and sleep_daily_total datasets where the day columns are equal. I noticed that they are different length, and after some digging realized I wasn't tracking my sleep on my Apple Watch until 2021-10-12. So I'll just merge from that date forward.
+
+```{r}
+# Let's use a left join to merge these 2 together when the day columns are equal in value
+steps_sleep_merged <- left_join(sleep_daily_total, steps_watch_daily_total, by = "day")
+```
+
+
+
+
