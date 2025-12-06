@@ -9,7 +9,7 @@ output:
     number_sections: true
 ---
 
-## Final Project: Walking Towards Better Sleep
+## Final Project: Walking Towards Longer Sleep
 
 Let's use my Apple Health data to see if on days when I take a higher number of steps, will I experience a greater amount of sleep that night, because increased physical activity promotes better sleep quality.
 
